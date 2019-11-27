@@ -1,5 +1,8 @@
 import json
 
+def convertFromKToDegrees(x):
+    x[1] = x[1] - 273.15
+    return x
 
 def extractTemperature(x):
     j = json.loads(x)
@@ -10,3 +13,4 @@ def extractTemperature(x):
         j["sensor Info"]["Measuring range Temperature"]["from"],
         j["sensor Info"]["Measuring range Temperature"]["upTo"]
     ))
+

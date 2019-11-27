@@ -5,8 +5,10 @@ from main.BatterySensor import *
 from main.EnergyConsumptionSensor import *
 from main.GUI import *
 from main.BarometerSensor import *
+from main.AirSensor import airExtractor
+from main.WindowSensor import windowExtraction
 from main.OutliersFilter import negativeFilter, rangeFilter
-from main.TemperatureSensor import extractTemperature
+from main.TemperatureSensor import extractTemperature, convertFromKToDegrees
 from main.Util import debug
 
 import math
@@ -22,18 +24,18 @@ INVALID=-99999913701999999
 messageCounter = 0
 
 # define steams
-temperatureSensor = Stream.from_tcp(54001).map(extractTemperature).map(rangeFilter)
+temperatureSensor = Stream.from_tcp(54001).map(extractTemperature).map(convertFromKToDegrees).map(rangeFilter)
 barometer1Sensor = Stream.from_tcp(54002).map(barometerExtractor).map(rangeFilter)
 barometer2Sensor = Stream.from_tcp(54003).map(barometerExtractor).map(rangeFilter)
 barometer3Sensor = Stream.from_tcp(54004).map(barometerExtractor).map(rangeFilter)
-livingAirSensor = Stream.from_tcp(54005)
-bathroomAirSensor = Stream.from_tcp(54006)
-bedroomAirSensor = Stream.from_tcp(54007)
-kitchenAirSensor = Stream.from_tcp(54009)
-livingWindowSensor = Stream.from_tcp(54010)
-bathWindowSensor = Stream.from_tcp(54011)
-bedWindowSensor = Stream.from_tcp(54012)
-kitchenWindowSensor = Stream.from_tcp(54013)
+livingAirSensor = Stream.from_tcp(54005).map(airExtractor).map(rangeFilter)
+bathroomAirSensor = Stream.from_tcp(54006).map(airExtractor).map(rangeFilter)
+bedroomAirSensor = Stream.from_tcp(54007).map(airExtractor).map(rangeFilter)
+kitchenAirSensor = Stream.from_tcp(54009).map(airExtractor).map(rangeFilter)
+livingWindowSensor = Stream.from_tcp(54010).map(windowExtraction)
+bathWindowSensor = Stream.from_tcp(54011).map(windowExtraction)
+bedWindowSensor = Stream.from_tcp(54012).map(windowExtraction)
+kitchenWindowSensor = Stream.from_tcp(54013).map(windowExtraction)
 energyConsumptionSensor = Stream.from_tcp(54014).map(energyConsumptionExtractor).map(negativeFilter)
 energyPhotovoltaicProduceSensor = Stream.from_tcp(54015).map(produceExtractor).map(negativeFilter)
 energyBatterySensor = Stream.from_tcp(54016).map(batteryExtractor)
@@ -78,6 +80,7 @@ def weatherForecast():
     #     - get only the value
     #     - convert a None as value to INVALID
     onlyTemp = temperatureSensor\
+        .map(debug)\
         .map(lambda x: x[1])\
         .map(lambda x: x if x is not None else INVALID)
 
@@ -92,14 +95,12 @@ def weatherForecast():
         .map(averagePressure)\
         .map(lambda x: x if x is not None else INVALID)\
         .zip(onlyTemp)\
-        .map(lambda x: x[0] / math.pow(1- TEMPERATURE_GRADIENT * WOLFENBUETELL_HIGHT / (x[1] + (TEMPERATURE_GRADIENT * WOLFENBUETELL_HIGHT)), 0.03416 / TEMPERATURE_GRADIENT))\
+        .map(lambda x: x[0] / math.pow(1- TEMPERATURE_GRADIENT * WOLFENBUETELL_HIGHT / ((x[1] + 273.15) + (TEMPERATURE_GRADIENT * WOLFENBUETELL_HIGHT)), 0.03416 / TEMPERATURE_GRADIENT))\
 
     onlyTemp.start()
 
-    weatherForecastStream.start()
     weatherForecastPrint = weatherForecastStream.sink(print)
     weatherForecastPrint.start()
-
 
 
 def newMassage(x):
@@ -141,6 +142,6 @@ if __name__ == "__main__":
     #combineAll()
     #energyPerDayAndMonth()
     weatherForecast()
-    infoEnergyAvailable()
+    #infoEnergyAvailable()
     initWindow()
 
