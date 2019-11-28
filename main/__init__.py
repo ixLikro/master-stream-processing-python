@@ -1,5 +1,4 @@
 from streamz import Stream
-from streamz.dataframe import DataFrame
 from main.PhotovoltaicProducerSensor import *
 from main.BatterySensor import *
 from main.EnergyConsumptionSensor import *
@@ -9,21 +8,23 @@ from main.AirSensor import airExtractor
 from main.WindowSensor import windowExtraction
 from main.OutliersFilter import negativeFilter, rangeFilter
 from main.TemperatureSensor import extractTemperature, convertFromKToDegrees
+from main.TimeSensor import simTimeExtractor
 from main.Util import debug
 
 import math
 
-#const
-#Wolfenbüttel: 77 m üNn
-WOLFENBUETELL_HIGHT=77
-#source: https://rechneronline.de/barometer
-TEMPERATURE_GRADIENT=0.0065/WOLFENBUETELL_HIGHT
+# const
+# Wolfenbüttel: 77 m üNn
+WOLFENBUETELL_HIGHT = 77
+# source: https://rechneronline.de/barometer
+TEMPERATURE_GRADIENT = 0.0065 / WOLFENBUETELL_HIGHT
 # a placeholder for an invalid number
-INVALID=-99999913701999999
+INVALID = -999999999999999
 
 messageCounter = 0
 
 # define steams
+simulationTimeSensor = Stream.from_tcp(54000).map(simTimeExtractor)
 temperatureSensor = Stream.from_tcp(54001).map(extractTemperature).map(convertFromKToDegrees).map(rangeFilter)
 barometer1Sensor = Stream.from_tcp(54002).map(barometerExtractor).map(rangeFilter)
 barometer2Sensor = Stream.from_tcp(54003).map(barometerExtractor).map(rangeFilter)
@@ -41,47 +42,49 @@ energyPhotovoltaicProduceSensor = Stream.from_tcp(54015).map(produceExtractor).m
 energyBatterySensor = Stream.from_tcp(54016).map(batteryExtractor)
 
 weatherForecastStream = None
+onlyTemp = None
+
 
 def sumDay(bigTupel):
-    #bigTupel[0] : consumption
+    # bigTupel[0] : consumption
     # bigTupel[1] : produce
     # bigTupel[2] : % charge
-    sumCost=0
-    sumProduce=0
+    sumCost = 0
+    sumProduce = 0
 
     for measuring in bigTupel:
-        if( measuring[0] is None or measuring[1] is None or measuring[2] is None):
+        if (measuring[0] is None or measuring[1] is None or measuring[2] is None):
             continue
-        if(measuring[2] <= 0.5 and measuring[0] > measuring[1]):
+        if (measuring[2] <= 0.5 and measuring[0] > measuring[1]):
             sumCost = sumCost + (((measuring[1] - measuring[0]) / 60) * 0.2686)
-        if(measuring[2] >= 99.5 and measuring[0] < measuring[1]):
+        if (measuring[2] >= 99.5 and measuring[0] < measuring[1]):
             sumProduce = sumProduce + (((measuring[0] - measuring[1]) / 60) * 0.1037)
     return (sumCost, sumProduce)
 
+
 def energyPerDayAndMonth():
-    dayCost = energyConsumptionSensor.zip(energyPhotovoltaicProduceSensor, energyBatterySensor)\
-        .map(lambda x: (x[0][1], x[1][1], (x[2][1] / x[2][3]) * 100. ))\
-        .partition(60 * 24)\
-        .map(sumDay)\
-        .map(lambda x: x[0] - x[1])\
+    dayCost = energyConsumptionSensor.combine_latest(energyPhotovoltaicProduceSensor, energyBatterySensor) \
+        .map(lambda x: (x[0][1], x[1][1], (x[2][1] / x[2][3]) * 100.)) \
+        .partition(60 * 24) \
+        .map(sumDay) \
+        .map(lambda x: x[0] - x[1]) \
         .map(lambda x: x / 100)
 
-    monthCost = dayCost.partition(30).map(sum).sink(print)
-    dayCost.sink(print)
+    monthCost = dayCost.partition(30).map(sum).sink(updateEnergyCostMonth)
+    dayCost.sink(updateEnergyCostDay)
 
     dayCost.start()
     monthCost.start()
 
 
 def weatherForecast():
-    global weatherForecastStream
+    global weatherForecastStream, onlyTemp
 
     # source temperatureSensor (extracted and filtered)
     #     - get only the value
     #     - convert a None as value to INVALID
-    onlyTemp = temperatureSensor\
-        .map(debug)\
-        .map(lambda x: x[1])\
+    onlyTemp = temperatureSensor \
+        .map(lambda x: x[1]) \
         .map(lambda x: x if x is not None else INVALID)
 
     # source barometer1Sensor (extracted and filtered)
@@ -90,58 +93,147 @@ def weatherForecast():
     #     - convert a None as value to INVALID
     #     - combine it with the onlyTemp stream
     #     - use the formula from https://rechneronline.de/barometer/ to forecast the weather
-    weatherForecastStream = barometer1Sensor\
-        .zip(barometer2Sensor, barometer3Sensor)\
-        .map(averagePressure)\
-        .map(lambda x: x if x is not None else INVALID)\
-        .zip(onlyTemp)\
-        .map(lambda x: x[0] / math.pow(1- TEMPERATURE_GRADIENT * WOLFENBUETELL_HIGHT / ((x[1] + 273.15) + (TEMPERATURE_GRADIENT * WOLFENBUETELL_HIGHT)), 0.03416 / TEMPERATURE_GRADIENT))\
+    weatherForecastStream = barometer1Sensor \
+        .combine_latest(barometer2Sensor, barometer3Sensor) \
+        .map(averagePressure) \
+        .map(lambda x: x if x is not None else INVALID) \
+        .combine_latest(onlyTemp) \
+        .map(lambda x: x[0] / math.pow(1 - TEMPERATURE_GRADIENT * WOLFENBUETELL_HIGHT / (
+                (x[1] + 273.15) + (TEMPERATURE_GRADIENT * WOLFENBUETELL_HIGHT)), 0.03416 / TEMPERATURE_GRADIENT))
 
     onlyTemp.start()
 
-    weatherForecastPrint = weatherForecastStream.sink(print)
+    weatherForecastPrint = weatherForecastStream.sink(updatePressure)
     weatherForecastPrint.start()
 
 
 def newMassage(x):
     global messageCounter
-    messageCounter = messageCounter +1
+    messageCounter = messageCounter + 1
     return messageCounter
 
-def combineAll():
-    global messageCounter
-    all = temperatureSensor.union(energyBatterySensor,
-                                  energyPhotovoltaicProduceSensor,
-                                  energyConsumptionSensor,
-                                  kitchenWindowSensor,
-                                  bedWindowSensor,
-                                  bathWindowSensor,
-                                  livingWindowSensor,
-                                  kitchenAirSensor,
-                                  bedroomAirSensor,
-                                  bathroomAirSensor,
-                                  livingAirSensor,
-                                  barometer3Sensor,
-                                  barometer2Sensor,
-                                  barometer1Sensor)\
-        .map(newMassage)\
-        .sink(print)\
-        .start()
 
 def infoEnergyAvailable():
-
     infoEnergy = energyBatterySensor \
         .map(lambda x: (x[1] / x[3]) * 100) \
         .combine_latest(weatherForecastStream) \
         .map(lambda x: True if x[0] >= 99.5 and x[1] < 990 else False) \
-        .sink(print)
+        .sink(updateEnergyAvailableInfo)
 
     infoEnergy.start()
 
-if __name__ == "__main__":
-    #combineAll()
-    #energyPerDayAndMonth()
-    weatherForecast()
-    #infoEnergyAvailable()
-    initWindow()
 
+def buildBadAirWarning(windowStream, airQulityStream):
+    return airQulityStream \
+        .map(lambda x: x[1] if x[1] is not None else INVALID) \
+        .map(lambda x: True if x > 1200 else False) \
+        .combine_latest(windowStream) \
+        .map(lambda x: True if (x[0] and not x[1][2]) else False)
+
+def initBadAirWarnings():
+    livingWarning = buildBadAirWarning(livingWindowSensor, livingAirSensor)\
+        .sink(updateLivingRoomOpenWindowWarning)
+    livingWarning.start()
+
+    kitchenWarning = buildBadAirWarning(kitchenWindowSensor, kitchenAirSensor)\
+        .sink(updateKitchenOpenWindowWarning)
+    kitchenWarning.start()
+
+    bathroomWarning = buildBadAirWarning(bathWindowSensor, bathroomAirSensor)\
+        .sink(updateBathRoomOpenWindowWarning)
+    bathroomWarning.start()
+
+    bedroomWarning = buildBadAirWarning(bedWindowSensor, bedroomAirSensor)\
+        .sink(updateBedRoomOpenWindowWarning)
+    bedroomWarning.start()
+
+def buildCloseWindowWarning(windowStream, airSensor):
+    return airSensor \
+        .map(lambda x: x[1] if x[1] is not None else INVALID)\
+        .map(lambda x: True if x > 0 and x < 550 else False)\
+        .combine_latest(windowStream)\
+        .map(lambda x: True if x[0] and x[1][2] else False )\
+        .combine_latest(onlyTemp) \
+        .map(lambda x: True if (x[0] and x[1] > -50 and x[1] < 11) else False)
+
+def initCloseWindowWarning():
+    livingCloseWarning = buildCloseWindowWarning(livingWindowSensor, livingAirSensor)\
+        .sink(updateLivingRoomCloseWindowWarning)
+    livingCloseWarning.start()
+
+    kitchenCloseWarning = buildCloseWindowWarning(kitchenWindowSensor, kitchenAirSensor)\
+        .sink(updateKitchenCloseWindowWarning)
+    kitchenCloseWarning.start()
+
+    bathroomCloseWarning = buildCloseWindowWarning(bathWindowSensor, bathroomAirSensor)\
+        .sink(updateBathRoomCloseWindowWarning)
+    bathroomCloseWarning.start()
+
+    bedroomCloseWarning = buildCloseWindowWarning(bedWindowSensor, bedroomAirSensor)\
+        .sink(updateBedRoomCloseWindowWarning)
+    bedroomCloseWarning.start()
+
+def convertToWeather(value):
+    if value < 500:
+        #invalid
+        return ""
+    if value < 980:
+       return "High Precipitation"
+    if value < 1000:
+        return "Low Precipitation"
+    if value < 1020:
+        return "Cloudy"
+    if value < 1040:
+        return "Slightly Cloudy"
+    return  "clear Sky"
+
+
+def startLiveOutput():
+    timeToDashboard = simulationTimeSensor.map(lambda x: x[1]).sink(updateSimTim).start()
+    tempToDashboard = onlyTemp.sink(updateTemperature).start()
+    foreCastToDashboard = weatherForecastStream.map(convertToWeather).sink(updateWeatherForecast).start()
+
+    energyConsumptionToDash = energyConsumptionSensor\
+        .map(lambda x: x[1] if x[1] is not None else INVALID)\
+        .sink(updateEnergyConsumption)\
+        .start()
+    energyProduceToDash = energyPhotovoltaicProduceSensor\
+        .map(lambda x: x[1] if x[1] is not None else INVALID)\
+        .sink(updateEnergyProduce)\
+        .start()
+    batteryToDashboard = energyBatterySensor \
+        .map(lambda x: (x[1] / x[3]) * 100)\
+        .sink(updateEnergyBattery)\
+        .start()
+
+    livingWindowToDashboard = livingWindowSensor.map(lambda x: x[2]).sink(updateLivingRoomWindowState).start()
+    kitchenWindowToDashboard = kitchenWindowSensor.map(lambda x: x[2]).sink(updateKitchenWindowState).start()
+    bathWindowToDashboard = bathWindowSensor.map(lambda x: x[2]).sink(updateBathRoomWindowState).start()
+    bedWindowToDashboard = bedWindowSensor.map(lambda x: x[2]).sink(updateBedRoomWindowState).start()
+
+    livingAirToDashboard = livingAirSensor\
+        .map(lambda x: x[1])\
+        .map(lambda x: x if x is not None else INVALID)\
+        .sink(updateLivingRoomAirQuality).start()
+    kitchenAirToDashboard = kitchenAirSensor\
+        .map(lambda x: x[1])\
+        .map(lambda x: x if x is not None else INVALID)\
+        .sink(updateKitchenAirQuality).start()
+    bathAirToDashboard = bathroomAirSensor\
+        .map(lambda x: x[1])\
+        .map(lambda x: x if x is not None else INVALID)\
+        .sink(updateBathRoomAirQuality).start()
+    bedAirToDashboard = bedroomAirSensor\
+        .map(lambda x: x[1])\
+        .map(lambda x: x if x is not None else INVALID)\
+        .sink(updateBedRoomAirQuality).start()
+
+
+if __name__ == "__main__":
+    weatherForecast()
+    energyPerDayAndMonth()
+    infoEnergyAvailable()
+    initBadAirWarnings()
+    initCloseWindowWarning()
+    startLiveOutput()
+    initWindow()
