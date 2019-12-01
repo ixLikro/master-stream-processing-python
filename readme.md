@@ -18,6 +18,7 @@ In these cases the processing part is simple:
 <br>
 But some other output is more complex here is an example of the weather forecast calculation as flow chart:
 
+![flow chart](https://raw.githubusercontent.com/ixLikro/master-stream-processing-python/master/img/flow_chart_weather_forecast.png)
 
 
 ### Output
@@ -46,7 +47,7 @@ This project output the following Data:
     
     
 ### Dashboard screen shot
-
+![flow chart](https://raw.githubusercontent.com/ixLikro/master-stream-processing-python/master/img/screenshot_streamprocessing_dashboard.png)
 
 
 
