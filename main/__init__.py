@@ -21,6 +21,14 @@ TEMPERATURE_GRADIENT = 0.0065 / WOLFENBUETELL_HIGHT
 # a placeholder for an invalid number
 INVALID = -999999999999999
 
+ENERGY_PRICE_IMPORT = 0.2686
+ENERGY_PRICE_EXPORT = 0.1037
+
+BAD_WEATHER_THRESHOLD = 990
+BAD_AIR_THRESHOLD = 1200
+GOOD_AIR_THRESHOLD = 550
+COLD_THRESHOLD = 11
+
 messageCounter = 0
 
 # define steams
@@ -56,9 +64,9 @@ def sumDay(bigTupel):
         if (measuring[0] is None or measuring[1] is None or measuring[2] is None):
             continue
         if (measuring[2] <= 0.5 and measuring[0] > measuring[1]):
-            sumCost = sumCost + (((measuring[1] - measuring[0]) / 60) * 0.2686)
+            sumCost = sumCost + (((measuring[1] - measuring[0]) / 60) * ENERGY_PRICE_IMPORT)
         if (measuring[2] >= 99.5 and measuring[0] < measuring[1]):
-            sumProduce = sumProduce + (((measuring[0] - measuring[1]) / 60) * 0.1037)
+            sumProduce = sumProduce + (((measuring[0] - measuring[1]) / 60) * ENERGY_PRICE_EXPORT)
     return (sumCost, sumProduce)
 
 
@@ -99,7 +107,7 @@ def weatherForecast():
         .map(lambda x: x if x is not None else INVALID) \
         .combine_latest(onlyTemp) \
         .map(lambda x: x[0] / math.pow(1 - TEMPERATURE_GRADIENT * WOLFENBUETELL_HIGHT / (
-                (x[1] + 273.15) + (TEMPERATURE_GRADIENT * WOLFENBUETELL_HIGHT)), 0.03416 / TEMPERATURE_GRADIENT))
+            (x[1] + 273.15) + (TEMPERATURE_GRADIENT * WOLFENBUETELL_HIGHT)), 0.03416 / TEMPERATURE_GRADIENT))
 
     onlyTemp.start()
 
@@ -114,119 +122,164 @@ def newMassage(x):
 
 
 def infoEnergyAvailable():
+    # source energyBatterySensor (extracted and filtered)
+    #     - calculate charge in %
+    #     - combine the stream with the weather forecast
+    #     - return true if battery is full and weather seems to getting worse otherwise false
+    #     - update warning on the dashboard
     infoEnergy = energyBatterySensor \
         .map(lambda x: (x[1] / x[3]) * 100) \
         .combine_latest(weatherForecastStream) \
-        .map(lambda x: True if x[0] >= 99.5 and x[1] < 990 else False) \
+        .map(lambda x: True if x[0] >= 99.5 and x[1] < BAD_WEATHER_THRESHOLD else False) \
         .sink(updateEnergyAvailableInfo)
 
     infoEnergy.start()
 
 
-def buildBadAirWarning(windowStream, airQulityStream):
-    return airQulityStream \
+def buildBadAirWarning(windowStream, airQualityStream):
+    # source airQualityStream (extracted and filtered)
+    #     - replace None values with INVALID
+    #     - return true if the air quality is bad otherwise false
+    #     - combine with the window states stream
+    #     - return True if the air is bad and all windows are closed
+    return airQualityStream \
         .map(lambda x: x[1] if x[1] is not None else INVALID) \
-        .map(lambda x: True if x > 1200 else False) \
+        .map(lambda x: True if x > BAD_AIR_THRESHOLD else False) \
         .combine_latest(windowStream) \
         .map(lambda x: True if (x[0] and not x[1][2]) else False)
 
+
 def initBadAirWarnings():
-    livingWarning = buildBadAirWarning(livingWindowSensor, livingAirSensor)\
+    livingWarning = buildBadAirWarning(livingWindowSensor, livingAirSensor) \
         .sink(updateLivingRoomOpenWindowWarning)
     livingWarning.start()
 
-    kitchenWarning = buildBadAirWarning(kitchenWindowSensor, kitchenAirSensor)\
+    kitchenWarning = buildBadAirWarning(kitchenWindowSensor, kitchenAirSensor) \
         .sink(updateKitchenOpenWindowWarning)
     kitchenWarning.start()
 
-    bathroomWarning = buildBadAirWarning(bathWindowSensor, bathroomAirSensor)\
+    bathroomWarning = buildBadAirWarning(bathWindowSensor, bathroomAirSensor) \
         .sink(updateBathRoomOpenWindowWarning)
     bathroomWarning.start()
 
-    bedroomWarning = buildBadAirWarning(bedWindowSensor, bedroomAirSensor)\
+    bedroomWarning = buildBadAirWarning(bedWindowSensor, bedroomAirSensor) \
         .sink(updateBedRoomOpenWindowWarning)
     bedroomWarning.start()
 
+
 def buildCloseWindowWarning(windowStream, airSensor):
+    # source airQualityStream (extracted and filtered)
+    #     - replace None values with INVALID
+    #     - return true if the air quality is good otherwise false
+    #     - combine with the window states stream
+    #     - return True if the air is good and at least one window is open
+    #     - combine with the window state stream
+    #     - return True if the air is good and at least one window is open and it is cold outside
     return airSensor \
-        .map(lambda x: x[1] if x[1] is not None else INVALID)\
-        .map(lambda x: True if x > 0 and x < 550 else False)\
-        .combine_latest(windowStream)\
-        .map(lambda x: True if x[0] and x[1][2] else False )\
+        .map(lambda x: x[1] if x[1] is not None else INVALID) \
+        .map(lambda x: True if 0 < x < GOOD_AIR_THRESHOLD else False) \
+        .combine_latest(windowStream) \
+        .map(lambda x: True if x[0] and x[1][2] else False) \
         .combine_latest(onlyTemp) \
-        .map(lambda x: True if (x[0] and x[1] > -50 and x[1] < 11) else False)
+        .map(lambda x: True if (x[0] and -50 < x[1] < COLD_THRESHOLD) else False)
+
 
 def initCloseWindowWarning():
-    livingCloseWarning = buildCloseWindowWarning(livingWindowSensor, livingAirSensor)\
+    livingCloseWarning = buildCloseWindowWarning(livingWindowSensor, livingAirSensor) \
         .sink(updateLivingRoomCloseWindowWarning)
     livingCloseWarning.start()
 
-    kitchenCloseWarning = buildCloseWindowWarning(kitchenWindowSensor, kitchenAirSensor)\
+    kitchenCloseWarning = buildCloseWindowWarning(kitchenWindowSensor, kitchenAirSensor) \
         .sink(updateKitchenCloseWindowWarning)
     kitchenCloseWarning.start()
 
-    bathroomCloseWarning = buildCloseWindowWarning(bathWindowSensor, bathroomAirSensor)\
+    bathroomCloseWarning = buildCloseWindowWarning(bathWindowSensor, bathroomAirSensor) \
         .sink(updateBathRoomCloseWindowWarning)
     bathroomCloseWarning.start()
 
-    bedroomCloseWarning = buildCloseWindowWarning(bedWindowSensor, bedroomAirSensor)\
+    bedroomCloseWarning = buildCloseWindowWarning(bedWindowSensor, bedroomAirSensor) \
         .sink(updateBedRoomCloseWindowWarning)
     bedroomCloseWarning.start()
 
+
 def convertToWeather(value):
     if value < 500:
-        #invalid
+        # invalid
         return ""
     if value < 980:
-       return "High Precipitation"
+        return "High Precipitation"
     if value < 1000:
         return "Low Precipitation"
     if value < 1020:
         return "Cloudy"
     if value < 1040:
         return "Slightly Cloudy"
-    return  "clear Sky"
+    return "clear Sky"
 
 
 def startLiveOutput():
-    timeToDashboard = simulationTimeSensor.map(lambda x: x[1]).sink(updateSimTim).start()
-    tempToDashboard = onlyTemp.sink(updateTemperature).start()
-    foreCastToDashboard = weatherForecastStream.map(convertToWeather).sink(updateWeatherForecast).start()
-
-    energyConsumptionToDash = energyConsumptionSensor\
-        .map(lambda x: x[1] if x[1] is not None else INVALID)\
-        .sink(updateEnergyConsumption)\
+    timeToDashboard = simulationTimeSensor\
+        .map(lambda x: x[1])\
+        .sink(updateSimTim)\
         .start()
-    energyProduceToDash = energyPhotovoltaicProduceSensor\
-        .map(lambda x: x[1] if x[1] is not None else INVALID)\
-        .sink(updateEnergyProduce)\
+    tempToDashboard = onlyTemp\
+        .sink(updateTemperature)\
+        .start()
+    foreCastToDashboard = weatherForecastStream\
+        .map(convertToWeather)\
+        .sink(updateWeatherForecast)\
+        .start()
+
+    energyConsumptionToDash = energyConsumptionSensor \
+        .map(lambda x: x[1] if x[1] is not None else INVALID) \
+        .sink(updateEnergyConsumption) \
+        .start()
+    energyProduceToDash = energyPhotovoltaicProduceSensor \
+        .map(lambda x: x[1] if x[1] is not None else INVALID) \
+        .sink(updateEnergyProduce) \
         .start()
     batteryToDashboard = energyBatterySensor \
-        .map(lambda x: (x[1] / x[3]) * 100)\
-        .sink(updateEnergyBattery)\
+        .map(lambda x: (x[1] / x[3]) * 100) \
+        .sink(updateEnergyBattery) \
         .start()
 
-    livingWindowToDashboard = livingWindowSensor.map(lambda x: x[2]).sink(updateLivingRoomWindowState).start()
-    kitchenWindowToDashboard = kitchenWindowSensor.map(lambda x: x[2]).sink(updateKitchenWindowState).start()
-    bathWindowToDashboard = bathWindowSensor.map(lambda x: x[2]).sink(updateBathRoomWindowState).start()
-    bedWindowToDashboard = bedWindowSensor.map(lambda x: x[2]).sink(updateBedRoomWindowState).start()
+    livingWindowToDashboard = livingWindowSensor\
+        .map(lambda x: x[2])\
+        .sink(updateLivingRoomWindowState)\
+        .start()
+    kitchenWindowToDashboard = kitchenWindowSensor\
+        .map(lambda x: x[2])\
+        .sink(updateKitchenWindowState)\
+        .start()
+    bathWindowToDashboard = bathWindowSensor\
+        .map(lambda x: x[2])\
+        .sink(updateBathRoomWindowState)\
+        .start()
+    bedWindowToDashboard = bedWindowSensor\
+        .map(lambda x: x[2])\
+        .sink(updateBedRoomWindowState)\
+        .start()
 
-    livingAirToDashboard = livingAirSensor\
-        .map(lambda x: x[1])\
-        .map(lambda x: x if x is not None else INVALID)\
-        .sink(updateLivingRoomAirQuality).start()
-    kitchenAirToDashboard = kitchenAirSensor\
-        .map(lambda x: x[1])\
-        .map(lambda x: x if x is not None else INVALID)\
-        .sink(updateKitchenAirQuality).start()
-    bathAirToDashboard = bathroomAirSensor\
-        .map(lambda x: x[1])\
-        .map(lambda x: x if x is not None else INVALID)\
-        .sink(updateBathRoomAirQuality).start()
-    bedAirToDashboard = bedroomAirSensor\
-        .map(lambda x: x[1])\
-        .map(lambda x: x if x is not None else INVALID)\
-        .sink(updateBedRoomAirQuality).start()
+    livingAirToDashboard = livingAirSensor \
+        .map(lambda x: x[1]) \
+        .map(lambda x: x if x is not None else INVALID) \
+        .sink(updateLivingRoomAirQuality)\
+        .start()
+    kitchenAirToDashboard = kitchenAirSensor \
+        .map(lambda x: x[1]) \
+        .map(lambda x: x if x is not None else INVALID) \
+        .sink(updateKitchenAirQuality)\
+        .start()
+    bathAirToDashboard = bathroomAirSensor \
+        .map(lambda x: x[1]) \
+        .map(lambda x: x if x is not None else INVALID) \
+        .sink(updateBathRoomAirQuality)\
+        .start()
+    bedAirToDashboard = bedroomAirSensor \
+        .map(lambda x: x[1]) \
+        .map(lambda x: x if x is not None else INVALID) \
+        .sink(updateBedRoomAirQuality)\
+        .start()
 
 
 if __name__ == "__main__":
