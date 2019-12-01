@@ -17,7 +17,7 @@ energyCostDay=StringVar()
 energyCostMonth=StringVar()
 energyAvailableInfo=StringVar()
 
-SHOULD_CLOSE_WINDOW = "You should close the window!\n The Room has a good air quality and ist cold outside."
+SHOULD_CLOSE_WINDOW = "You should close the window!\n The Room has a good air quality and it is cold outside."
 SHOULD_OPEN_WINDOW = "Bad air quality! You should open a window!"
 ENERGY_AVAILABLE_INFO = "You hava a lot of Energy available and the Weather seems to getting worse. So better use your Energy now!"
 
