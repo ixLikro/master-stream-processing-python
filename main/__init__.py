@@ -71,6 +71,13 @@ def sumDay(bigTupel):
 
 
 def energyPerDayAndMonth():
+    # source energyConsumptionSensor
+    #     - combine it with energyPhotovoltaicProduceSensor and energyBatterySensor
+    #     - extract consumption, produce, and % change
+    #     - wait until one day is over
+    #     - sum the hole day and convert to €-Cent
+    #     - calculate day balance
+    #     - convert to €
     dayCost = energyConsumptionSensor.combine_latest(energyPhotovoltaicProduceSensor, energyBatterySensor) \
         .map(lambda x: (x[0][1], x[1][1], (x[2][1] / x[2][3]) * 100.)) \
         .partition(60 * 24) \
@@ -78,7 +85,13 @@ def energyPerDayAndMonth():
         .map(lambda x: x[0] - x[1]) \
         .map(lambda x: x / 100)
 
-    monthCost = dayCost.partition(30).map(sum).sink(updateEnergyCostMonth)
+    # source dayCost
+    #     - wait until one month is over
+    #     - sum the hole month
+    #     - update the month energy cost on the dashboard
+    monthCost = dayCost.partition(30)\
+        .map(sum)\
+        .sink(updateEnergyCostMonth)
     dayCost.sink(updateEnergyCostDay)
 
     dayCost.start()
